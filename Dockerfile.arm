@@ -1,0 +1,45 @@
+# Stage 1: Build the frontend
+FROM arm32v7/node:16 AS builder
+
+WORKDIR /build
+COPY web/package.json .
+RUN npm install
+COPY ./web .
+COPY ./VERSION .
+RUN DISABLE_ESLINT_PLUGIN='true' REACT_APP_VERSION=$(cat VERSION) npm run build
+
+# Stage 2: Build the backend
+FROM golang:latest AS builder2
+RUN apt-get update && apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+
+# 设置交叉编译的环境变量
+ENV PATH="/usr/bin:${PATH}" \
+    GO111MODULE=on \
+    GOOS=linux \
+    GOARCH=arm \
+    GOARM=7 \
+    CC=arm-linux-gnueabihf-gcc \
+    CXX=arm-linux-gnueabihf-g++ \
+    CGO_ENABLED=1
+
+WORKDIR /build
+COPY . .
+COPY --from=builder /build/build ./web/build
+
+# Build the Go binary with correct cross-compilation options
+RUN go mod download
+RUN go build -a -installsuffix cgo -ldflags="-s -w -X 'one-api/common.Version=$(cat VERSION)' -extldflags '-static'" -o one-api
+
+
+# Stage 3: Create the final image
+FROM arm32v7/alpine:latest
+
+RUN apk update \
+    && apk upgrade \
+    && apk add --no-cache ca-certificates tzdata \
+    && update-ca-certificates 2>/dev/null || true
+
+COPY --from=builder2 /build/one-api /
+EXPOSE 3000
+WORKDIR /data
+ENTRYPOINT ["/one-api"]
